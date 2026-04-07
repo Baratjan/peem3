@@ -5,3 +5,4 @@ streamlit
 scikit-image
 scipy
 opencv-python-headless
+matplotlib
