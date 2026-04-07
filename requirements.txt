@@ -1,3 +1,7 @@
 streamlit
 tifffile
 numpy
+streamlit
+scikit-image
+scipy
+opencv-python-headless
