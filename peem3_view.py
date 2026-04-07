@@ -59,99 +59,68 @@ if uploaded_file:
         st.info("Use the sidebar to play or scroll through the raw stack.")
 
     # --- TAB 2: DRIFT CORRECTION ---
+    # --- TAB 2: DRIFT CORRECTION ---
     with tab_drift:
-    st.header("Robust Drift Correction (Guyader Method)")
-    
-    col_ctrl, col_prev = st.columns([1, 2])
-    
-    with col_ctrl:
-        sigma_val = st.number_input("Gaussian Blur Radius", 0.0, 10.0, 1.5)
-        st.markdown("### Select Tracking ROI")
-        roi_size = st.selectbox("ROI Square Size (Power of 2)", [64, 128, 256, 512], index=1)
-        roi_x = st.slider("ROI Center X", 0, w, w//2)
-        roi_y = st.slider("ROI Center Y", 0, h, h//2)
+        st.header("Robust Drift Correction (Guyader Method)")
         
-        run_drift = st.button("🚀 Run Alignment", use_container_width=True)
-
-    with col_prev:
-        y1, y2 = max(0, roi_y - roi_size//2), min(h, roi_y + roi_size//2)
-        x1, x2 = max(0, roi_x - roi_size//2), min(w, roi_x + roi_size//2)
+        col_ctrl, col_prev = st.columns([1, 2])
         
-        # Live Preview of Tracking Box
-        preview = exposure.rescale_intensity(mmap_stack[0], out_range=(0, 255)).astype(np.uint8)
-        preview = cv2.cvtColor(preview, cv2.COLOR_GRAY2RGB)
-        cv2.rectangle(preview, (x1, y1), (x2, y2), (255, 0, 0), 5)
-        st.image(preview, caption="Tracking ROI Preview (Red Box)", use_container_width=True)
+        with col_ctrl:
+            sigma_val = st.number_input("Gaussian Blur Radius", 0.0, 10.0, 1.5)
+            st.markdown("### Select Tracking ROI")
+            # Logic based on power-of-2 optimization for FFT efficiency
+            roi_size = st.selectbox("ROI Square Size (Power of 2)", [64, 128, 256, 512], index=1)
+            roi_x = st.slider("ROI Center X", 0, w, w//2)
+            roi_y = st.slider("ROI Center Y", 0, h, h//2)
+            
+            run_drift = st.button("🚀 Run Alignment", use_container_width=True)
 
-    if run_drift:
-        with st.spinner("Aligning stack using Robust Sequential Logic..."):
-            # 1. Setup based on your drift_correct.ipynb
-            num_frames = n_frames
-            cum_y, cum_x = [0.0], [0.0]
-            roi_h, roi_w = y2-y1, x2-x1
-            window = filters.window('hann', (roi_h, roi_w))
+        with col_prev:
+            y1, y2 = max(0, roi_y - roi_size//2), min(h, roi_y + roi_size//2)
+            x1, x2 = max(0, roi_x - roi_size//2), min(w, roi_x + roi_size//2)
             
-            # Pre-calculate complex edge filter for frames
-            # Processing frame-by-frame to conserve RAM
-            ref_roi = apply_guyader_filter(mmap_stack[0, y1:y2, x1:x2], sigma_val) * window
-            
-            for i in range(1, num_frames):
-                mov_roi = apply_guyader_filter(mmap_stack[i, y1:y2, x1:x2], sigma_val) * window
+            # Display tracking ROI preview using robust complex edge filtering
+            ref_frame = mmap_stack[0].copy()
+            preview = exposure.rescale_intensity(ref_frame, out_range=(0, 255)).astype(np.uint8)
+            preview = cv2.cvtColor(preview, cv2.COLOR_GRAY2RGB)
+            cv2.rectangle(preview, (x1, y1), (x2, y2), (255, 0, 0), 5)
+            st.image(preview, caption="Tracking ROI Preview (Red Box)", use_container_width=True)
+
+        if run_drift:
+            with st.spinner("Calculating Shifts using Phase Cross-Correlation..."):
+                # Sequential logic to identify peak displacement between frames
+                cum_y, cum_x = [0.0], [0.0]
+                window = filters.window('hann', (y2-y1, x2-x1))
                 
-                # Phase Cross Correlation
-                shift_vec, error, diffphase = phase_cross_correlation(
-                    ref_roi, mov_roi, upsample_factor=UPSAMPLE_FACTOR
-                )
+                # Apply Guyader filter for normalized gradients
+                ref_roi = apply_guyader_filter(mmap_stack[0, y1:y2, x1:x2], sigma_val) * window
                 
-                cum_y.append(cum_y[-1] + shift_vec[0])
-                cum_x.append(cum_x[-1] + shift_vec[1])
-                ref_roi = mov_roi # Sequential logic: next frame compared to current
+                for i in range(1, n_frames):
+                    mov_roi = apply_guyader_filter(mmap_stack[i, y1:y2, x1:x2], sigma_val) * window
+                    shift_vec, error, diffphase = phase_cross_correlation(
+                        ref_roi, mov_roi, upsample_factor=UPSAMPLE_FACTOR
+                    )
+                    
+                    cum_y.append(cum_y[-1] + shift_vec[0])
+                    cum_x.append(cum_x[-1] + shift_vec[1])
+                    ref_roi = mov_roi 
 
-            # 2. Apply Bi-Cubic Correction to the full stack
-            corrected = np.zeros_like(mmap_stack, dtype=np.float32)
-            for i in range(num_frames):
-                corrected[i] = shift(mmap_stack[i], shift=(cum_y[i], cum_x[i]), order=3, mode='constant', cval=0)
+                # Apply Bi-Cubic correction to full stack to preserve resolution
+                corrected = np.zeros_like(mmap_stack, dtype=np.float32)
+                for i in range(num_frames):
+                    corrected[i] = shift(mmap_stack[i], shift=(cum_y[i], cum_x[i]), order=3, mode='constant', cval=0)
 
-            # 3. Auto-Crop to overlapping region
-            y_min, y_max = int(np.ceil(max(0, max(cum_y)))), int(np.floor(min(0, min(cum_y))))
-            x_min, x_max = int(np.ceil(max(0, max(cum_x)))), int(np.floor(min(0, min(cum_x))))
-            
-            final_stack = corrected[:, 
-                y_min : (corrected.shape[1] + y_max),
-                x_min : (corrected.shape[2] + x_max)
-            ]
-            
-            # Store results in Session State for persistence
-            st.session_state.final_stack = final_stack
-            st.session_state.cum_x = cum_x
-            st.session_state.cum_y = cum_y
-            
-            st.success(f"Alignment Complete! New Shape: {final_stack.shape}")
-
-    # --- THE DOWNLOAD SECTION ---
-    if 'final_stack' in st.session_state:
-        st.markdown("---")
-        st.subheader("Export Results")
-        
-        # Display the drift profile chart
-        st.line_chart({"X Shift": st.session_state.cum_x, "Y Shift": st.session_state.cum_y})
-        
-        # Create the download button
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".tif") as tmp_out:
-            tiff.imwrite(tmp_out.name, st.session_state.final_stack.astype(np.float32), photometric='minisblack')
-            
-            with open(tmp_out.name, "rb") as f:
-                st.download_button(
-                    label="💾 Download Aligned 32-bit Stack",
-                    data=f,
-                    file_name="aligned_peem_stack.tif",
-                    mime="image/tiff",
-                    use_container_width=True
-                )
-        
-        # Cleanup temporary export file
-        if os.path.exists(tmp_out.name):
-            os.remove(tmp_out.name)
+                # Auto-Crop to overlapping region
+                y_min, y_max = int(np.ceil(max(0, max(cum_y)))), int(np.floor(min(0, min(cum_y))))
+                x_min, x_max = int(np.ceil(max(0, max(cum_x)))), int(np.floor(min(0, min(cum_x))))
+                
+                st.session_state.final_stack = corrected[:, 
+                    y_min : (corrected.shape[1] + y_max),
+                    x_min : (corrected.shape[2] + x_max)
+                ]
+                st.session_state.cum_x = cum_x
+                st.session_state.cum_y = cum_y
+                st.success("Alignment complete!")
     
     # --- TAB 3: FFT MASKING ---
     with tab_fft:
