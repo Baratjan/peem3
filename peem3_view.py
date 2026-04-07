@@ -94,7 +94,7 @@ if uploaded_file is not None:
         col_ctrl, col_prev = st.columns([1, 2])
         
         with col_ctrl:
-            sigma_val = st.number_input("Filter: Gaussian Blur Radius", 0.0, 5.0, 1.5)
+            sigma_val = st.number_input("Filter: Gaussian Blur Radius", 0.0, 20.0, 1.5)
             st.markdown("### 🎯 Region of Interest (ROI)")
             # Standard power-of-2 squares for FFT efficiency
             roi_size = st.selectbox("ROI Square Size", [128, 256, 512], index=1)
