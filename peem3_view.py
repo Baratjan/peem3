@@ -90,7 +90,7 @@ if uploaded_file is not None:
         col_ctrl, col_prev = st.columns([1, 2])
         
         with col_ctrl:
-            sigma_val = st.sidebar.number_input("Filter: Gaussian Blur Radius", 0.0, 5.0, 1.5)
+            sigma_val = st.sidebar.number_input("Filter: Gaussian Blur Radius", 0.0, 20.0, 1.5)
             st.markdown("### 🎯 Region of Interest (ROI)")
             roi_size = st.selectbox("ROI Square Size (Power of 2)", [128, 256, 512], index=1)
             roi_x = st.slider("ROI Center X", 0, w, w//2)
