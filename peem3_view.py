@@ -5,66 +5,101 @@ Created on Tue Apr  7 11:09:08 2026
 
 @author: baratachinuq
 """
-
 import streamlit as st
 import tifffile as tiff
 import numpy as np
 import tempfile
 import os
+import time
 
-st.set_page_config(page_title="UHV TIFF Stack Viewer", layout="wide")
+st.set_page_config(page_title="UHV PEEM Viewer", layout="wide")
 
-st.title("🔬 Scientific TIFF Stack Viewer")
-st.write("Upload a 32-bit TIFF stack to crop (1024x1024) and view with smart contrast.")
+# --- SIDEBAR CONTROLS ---
+st.sidebar.title("Controls")
+uploaded_file = st.sidebar.file_uploader("Upload 32-bit TIFF", type=['tif', 'tiff'])
 
-# 1. File Uploader
-uploaded_file = st.file_uploader("Choose a TIFF file", type=['tif', 'tiff'])
+# Animation Settings
+st.sidebar.markdown("---")
+play_mode = st.sidebar.toggle("▶ Play Animation")
+speed = st.sidebar.slider("Speed (seconds per frame)", 0.01, 2.0, 0.1)
+loop_playback = st.sidebar.checkbox("Loop", value=True)
+
+# --- MAIN INTERFACE ---
+st.title("🔬 Scientific Stack Browser")
 
 if uploaded_file is not None:
-    # Save uploaded bytes to a temporary file to enable Memory Mapping
+    # Save to temp file for memmap efficiency
     with tempfile.NamedTemporaryFile(delete=False, suffix=".tif") as tmp:
         tmp.write(uploaded_file.getvalue())
         tmp_path = tmp.name
 
     try:
-        # 2. Open via Memory Map (Very RAM efficient)
         with tiff.TiffFile(tmp_path) as tif:
             mmap_stack = tif.asarray(out='memmap')
             n_frames, h, w = mmap_stack.shape
             
-            st.sidebar.info(f"Original Dimensions: {h}x{w}")
-            st.sidebar.info(f"Total Frames: {n_frames}")
-
-            # 3. Setup Cropping
+            # Setup Cropping (1024x1024 center)
             target = 1024
             sh = (h - target) // 2 if h > target else 0
             sw = (w - target) // 2 if w > target else 0
 
-            # 4. Interactive Slider
-            idx = st.slider("Select Frame", 0, n_frames - 1, 0)
+            # Manual Slider (hidden or inactive during play)
+            if "frame_idx" not in st.session_state:
+                st.session_state.frame_idx = 0
 
-            # 5. Process Frame (Crop + Smart Contrast)
-            # Pull only the cropped chunk of the selected frame from disk
-            frame = mmap_stack[idx, sh:sh+target, sw:sw+target].astype(np.float32)
-            
-            # Calculate 1% and 99% percentiles for this frame
-            vmin = np.percentile(frame, 1)
-            vmax = np.percentile(frame, 99)
-            
-            # Normalize to 0-1 range for browser display
-            if vmax > vmin:
-                display_frame = np.clip(frame, vmin, vmax)
-                display_frame = (display_frame - vmin) / (vmax - vmin)
-            else:
-                display_frame = frame
+            if not play_mode:
+                st.session_state.frame_idx = st.slider("Manual Frame Selection", 0, n_frames - 1, st.session_state.frame_idx)
 
-            # 6. Display
-            st.image(display_frame, caption=f"Frame {idx+1}/{n_frames} | Contrast Limits: {vmin:.2f} - {vmax:.2f}", use_container_width=True)
+            # --- CENTERED IMAGE LAYOUT ---
+            # Using 3 columns [1, 2, 1] puts the image in the middle ~50% of the screen
+            col1, col2, col3 = st.columns([1, 2, 1])
+            
+            with col2:
+                image_placeholder = st.empty()
+                info_placeholder = st.empty()
+
+                # Animation Loop
+                if play_mode:
+                    while play_mode:
+                        # Pull current frame
+                        f_idx = st.session_state.frame_idx
+                        frame = mmap_stack[f_idx, sh:sh+target, sw:sw+target].astype(np.float32)
+                        
+                        # Smart Contrast (1% - 99%)
+                        vmin, vmax = np.percentile(frame, [1, 99])
+                        if vmax > vmin:
+                            display_frame = np.clip(frame, vmin, vmax)
+                            display_frame = (display_frame - vmin) / (vmax - vmin)
+                        else:
+                            display_frame = frame
+
+                        # Update UI
+                        image_placeholder.image(display_frame, use_container_width=True)
+                        info_placeholder.caption(f"Playing: Frame {f_idx + 1}/{n_frames} | {speed}s delay")
+                        
+                        # Increment frame
+                        if st.session_state.frame_idx < n_frames - 1:
+                            st.session_state.frame_idx += 1
+                        elif loop_playback:
+                            st.session_state.frame_idx = 0
+                        else:
+                            break # Stop if not looping
+                        
+                        time.sleep(speed)
+                
+                else:
+                    # Static View (Manual slider mode)
+                    f_idx = st.session_state.frame_idx
+                    frame = mmap_stack[f_idx, sh:sh+target, sw:sw+target].astype(np.float32)
+                    vmin, vmax = np.percentile(frame, [1, 99])
+                    display_frame = np.clip(frame, vmin, vmax)
+                    display_frame = (display_frame - vmin) / (vmax - vmin)
+                    
+                    image_placeholder.image(display_frame, use_container_width=True)
+                    info_placeholder.caption(f"Static: Frame {f_idx + 1}/{n_frames} | Limits: {vmin:.1f} - {vmax:.1f}")
 
     finally:
-        # Cleanup temporary file
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
-
 else:
-    st.info("Waiting for a file upload...")
+    st.info("Please upload a file in the sidebar to begin.")
